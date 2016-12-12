@@ -1,0 +1,93 @@
+From d1180833339401a7173b5c59f8f89c25a9f38de6 Mon Sep 17 00:00:00 2001
+From: Keno Fischer <keno@juliacomputing.com>
+Date: Mon, 12 Dec 2016 00:14:44 -0500
+Subject: [PATCH] x86_64: Expand CFI to cover clone after the syscall
+
+The CFI used to terminate after the syscall, leaving unwinding for the
+rest of the function up to the debugger's imagination. The comment states
+that the reason for this is that the unwind info would be incorrect in the
+child. However, without unwind info, both the child and the parent process
+may fail to unwind properly after the syscall (though some debuggers still
+have heuristics that work for the parent case). To improve this situation,
+use a DWARF impression that checks %rax, and if non-zero (i.e. we're in
+the parent, behaves like the CFI for the rest of the function). If %rax==0,
+the CFI indicates to unwind to thread_start. Ideally, I would have liked
+to have it undefine %rip, but it does not look like that is possible.
+However, even if not entirely correct, I think this version is a strict
+improvement over what was there before.
+
+E.g. in GDB:
+Backtrace before:
+ #0  0x00007f14a1119081 in clone () from /lib/x86_64-linux-gnu/libc.so.6
+ #1  0x00007f14a13df640 in ?? () from /lib/x86_64-linux-gnu/libpthread.so.0
+ #2  0x00007f14a0e0c700 in ?? ()
+ #3  0x0000000000000000 in ?? ()
+
+Backtrace after:
+ #0  clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:105
+ #1  0x00007f377330485b in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:120
+
+Another option would be to create another global symbol e.g.
+`new_thread_from_clone` and have the unwind pretend to unwind there.
+---
+ sysdeps/unix/sysv/linux/x86_64/clone.S | 30 ++++++++++++++++++++++++++----
+ 1 file changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/sysdeps/unix/sysv/linux/x86_64/clone.S b/sysdeps/unix/sysv/linux/x86_64/clone.S
+index 66f4b11..1bd2eed 100644
+--- a/sysdeps/unix/sysv/linux/x86_64/clone.S
++++ b/sysdeps/unix/sysv/linux/x86_64/clone.S
+@@ -72,16 +72,38 @@ ENTRY (__clone)
+ 	mov	8(%rsp), %R10_LP
+ 	movl	$SYS_ify(clone),%eax
+ 
+-	/* End FDE now, because in the child the unwind info will be
+-	   wrong.  */
+-	cfi_endproc;
+ 	syscall
+ 
++  /* Best effort unwind info that works for both the parent and the child.
++     Ideally, we'd have cfi_undefiend(%rip) in the child and keep everything
++     the same in the parent, but we can't do that (since there's no way for
++     an expression to return undefined). Instead, we pretend that the child
++     came from thread_start. This isn't quite correct, but at least better than
++     whatever the debugger heuristics would have come up with in the absence
++     of unwind info */
++
++  /* Encodes: parent %rip = %rax == 0 ? %rip + (2f - .) : *%rsp
++     DW_CFA_val_expression %rip DW_OP_breg16(2f-1b) DW_OP_lit0 DW_OP_breg0(0)
++     DW_OP_eq DW_OP_bra(0x0003) DW_OP_breg7(0) DW_OP_deref */
++#define CFI_CHILD_RIP_IS_THREAD_START \
++	.cfi_escape 0x16, 0x10, 0xc, 0x80, 2f-., 0x30, 0x70, 0x0, 0x29,\
++		0x28, 0x03, 0x0, 0x77, 0x0, 0x6;
++
++  /* encode parent %rsp = %rsp + (%rax != 0 ? 8 : 0)
++     DW_CFA_val_expression %rsp DW_OP_breg7(0) DW_OP_lit0 DW_OP_breg0(0)
++     DW_OP_ne DW_OP_lit3 DW_OP_shl DW_OP_plus*/
++	.cfi_escape 0x16, 0x7, 0x9, 0x77, 0x0, 0x30, 0x70, 0x00, 0x2e, 0x33,
++		0x24, 0x22;
++
++	CFI_CHILD_RIP_IS_THREAD_START
+ 	testq	%rax,%rax
++	CFI_CHILD_RIP_IS_THREAD_START
+ 	jl	SYSCALL_ERROR_LABEL
++ 	CFI_CHILD_RIP_IS_THREAD_START
+ 	jz	L(thread_start)
+ 
+ 	ret
++  cfi_endproc;
+ 
+ L(thread_start):
+ 	cfi_startproc;
+@@ -90,7 +112,7 @@ L(thread_start):
+ 	/* Clear the frame pointer.  The ABI suggests this be done, to mark
+ 	   the outermost frame obviously.  */
+ 	xorl	%ebp, %ebp
+-
++2:
+ 	andq	$CLONE_VM, %rdi
+ 	jne	1f
+ 	movl	$SYS_ify(getpid), %eax
+-- 
+2.9.3
+

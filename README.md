@@ -170,3 +170,11 @@ to be performed (for the actual implementation, see [here](https://github.com/Ke
   in the DWARF standard.
 
 # Patches for correct unwinding
+
+For details, I recommend reading the commit messages for these patches, what follows is only a brief overview.
+For glibc:
+- `0001-Add-CFI-to-x86_64-RTLD_START.patch` - Adds unwind info to `_start` assembly function`
+- `0001-x86_64-Expand-CFI-to-cover-clone-after-the-syscall.patch` - Fixes unwind info for `clone`
+- `0001-Hack-in-startup-code-to-force-.init_array-use.patch` - Removes support for .init, using .init_array instead
+  (Note to creators of the new linux distributions - consider dropping support for .init from your distribution).
+

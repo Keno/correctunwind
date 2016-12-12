@@ -1,0 +1,150 @@
+From 1feb7b6c240b14a1bf1a6d1115d6e6b304ef2872 Mon Sep 17 00:00:00 2001
+From: Keno Fischer <keno@juliacomputing.com>
+Date: Sat, 5 Nov 2016 20:00:57 -0400
+Subject: [PATCH] Add CFI to x86_64 RTLD_START
+
+The application's entry point already has the appropriate CFI to
+indicate to tools that the end of the stack has been reached. This
+CFI was lacking from the dynamic linker, causing garbled backtraces
+after hitting _dl_start. Fix this by adding the appropriate CFI.
+
+While we're here, reformat the assembly to make it clearer what is and
+isn't part of the string literal.
+
+Example gdb output before:
+
+```
+(gdb) bt
+ #0  0x00007f10a2cee2d0 in _start () from /lib64/ld-linux-x86-64.so.2
+ #1  0x0000000000000003 in ?? ()
+ #2  0x00007ffd2ba54ce9 in ?? ()
+ #3  0x00007ffd2ba54d04 in ?? ()
+ #4  0x00007ffd2ba54d07 in ?? ()
+ #5  0x0000000000000000 in ?? ()
+```
+
+after:
+```
+(gdb) bt
+ #0  0x00007f36273551b0 in _start () from
+/home/kfischer/replacement-usr/lib/ld-2.23.90.so
+```
+---
+ sysdeps/x86_64/dl-machine.h | 101 +++++++++++++++++++++++---------------------
+ 1 file changed, 54 insertions(+), 47 deletions(-)
+
+diff --git a/sysdeps/x86_64/dl-machine.h b/sysdeps/x86_64/dl-machine.h
+index 5c021dc..5c0356d 100644
+--- a/sysdeps/x86_64/dl-machine.h
++++ b/sysdeps/x86_64/dl-machine.h
+@@ -156,53 +156,60 @@ elf_machine_runtime_setup (struct link_map *l, int lazy, int profile)
+ /* Initial entry point code for the dynamic linker.
+    The C function `_dl_start' is the real entry point;
+    its return value is the user program's entry point.  */
+-#define RTLD_START asm ("\n\
+-.text\n\
+-	.align 16\n\
+-.globl _start\n\
+-.globl _dl_start_user\n\
+-_start:\n\
+-	movq %rsp, %rdi\n\
+-	call _dl_start\n\
+-_dl_start_user:\n\
+-	# Save the user entry point address in %r12.\n\
+-	movq %rax, %r12\n\
+-	# See if we were run as a command with the executable file\n\
+-	# name as an extra leading argument.\n\
+-	movl _dl_skip_args(%rip), %eax\n\
+-	# Pop the original argument count.\n\
+-	popq %rdx\n\
+-	# Adjust the stack pointer to skip _dl_skip_args words.\n\
+-	leaq (%rsp,%rax,8), %rsp\n\
+-	# Subtract _dl_skip_args from argc.\n\
+-	subl %eax, %edx\n\
+-	# Push argc back on the stack.\n\
+-	pushq %rdx\n\
+-	# Call _dl_init (struct link_map *main_map, int argc, char **argv, char **env)\n\
+-	# argc -> rsi\n\
+-	movq %rdx, %rsi\n\
+-	# Save %rsp value in %r13.\n\
+-	movq %rsp, %r13\n\
+-	# And align stack for the _dl_init call. \n\
+-	andq $-16, %rsp\n\
+-	# _dl_loaded -> rdi\n\
+-	movq _rtld_local(%rip), %rdi\n\
+-	# env -> rcx\n\
+-	leaq 16(%r13,%rdx,8), %rcx\n\
+-	# argv -> rdx\n\
+-	leaq 8(%r13), %rdx\n\
+-	# Clear %rbp to mark outermost frame obviously even for constructors.\n\
+-	xorl %ebp, %ebp\n\
+-	# Call the function to run the initializers.\n\
+-	call _dl_init\n\
+-	# Pass our finalizer function to the user in %rdx, as per ELF ABI.\n\
+-	leaq _dl_fini(%rip), %rdx\n\
+-	# And make sure %rsp points to argc stored on the stack.\n\
+-	movq %r13, %rsp\n\
+-	# Jump to the user's entry point.\n\
+-	jmp *%r12\n\
+-.previous\n\
+-");
++#define RTLD_START asm ("\n"                                                   \
++".text\n"                                                                      \
++".align 16\n"                                                                  \
++".globl _start\n"                                                              \
++".globl _dl_start_user\n"                                                      \
++"_start:\n"                                                                    \
++     CFI_STARTPROC "\n"                                                        \
++     CFI_UNDEFINED(%rip) "\n"                                                  \
++"    movq %rsp, %rdi\n"                                                        \
++"    call _dl_start\n"                                                         \
++     CFI_ENDPROC "\n"                                                          \
++"_dl_start_user:\n"                                                            \
++     CFI_STARTPROC "\n"                                                        \
++     CFI_UNDEFINED(%rip) "\n"                                                  \
++     /* Save the user entry point address in %r12. */                          \
++"    movq %rax, %r12\n"                                                        \
++     /* See if we were run as a command with the executable file               \
++        name as an extra leading argument. */                                  \
++"    movl _dl_skip_args(%rip), %eax\n"                                         \
++     /* Pop the original argument count. */                                    \
++"    popq %rdx\n"                                                              \
++     /* Adjust the stack pointer to skip _dl_skip_args words. */               \
++"    leaq (%rsp,%rax,8), %rsp\n"                                               \
++     /* Subtract _dl_skip_args from argc. */                                   \
++"    subl %eax, %edx\n"                                                        \
++     /* Push argc back on the stack. */                                        \
++"    pushq %rdx\n"                                                             \
++     /* Start preparing call to                                                \
++      _dl_init (struct link_map *main_map, int argc, char **argv, char **env)*/\
++     /* argc -> rsi */                                                         \
++"    movq %rdx, %rsi\n"                                                        \
++     /* Save %rsp value in %r13. */                                            \
++"    movq %rsp, %r13\n"                                                        \
++     /* And align stack for the _dl_init call. */                              \
++"    andq $-16, %rsp\n"                                                        \
++     /* _dl_loaded -> rdi */                                                   \
++"    movq _rtld_local(%rip), %rdi\n"                                           \
++     /* env -> rcx */                                                          \
++"    leaq 16(%r13,%rdx,8), %rcx\n"                                             \
++     /* argv -> rdx */                                                         \
++"    leaq 8(%r13), %rdx\n"                                                     \
++     /* Clear %rbp to mark outermost frame obviously even for constructors. */ \
++"    xorl %ebp, %ebp\n"                                                        \
++     /* Call the function to run the initializers. */                          \
++"    call _dl_init\n"                                                          \
++     /* Pass our finalizer function to the user in %rdx, as per ELF ABI. */    \
++"    leaq _dl_fini(%rip), %rdx\n"                                              \
++     /* And make sure %rsp points to argc stored on the stack. */              \
++"    movq %r13, %rsp\n"                                                        \
++     /* Jump to the user's entry point. */                                     \
++"    jmp *%r12\n"                                                              \
++     CFI_ENDPROC "\n"                                                          \
++".previous\n"                                                                  \
++);
+ 
+ /* ELF_RTYPE_CLASS_PLT iff TYPE describes relocation of a PLT entry or
+    TLS variable, so undefined references should not be allowed to
+-- 
+2.9.3
+

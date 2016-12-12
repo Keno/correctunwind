@@ -1,0 +1,255 @@
+From d94e0c5b7e4e9c73b1a9c086c33c52d99158630c Mon Sep 17 00:00:00 2001
+From: Keno Fischer <keno@juliacomputing.com>
+Date: Mon, 12 Dec 2016 18:44:49 -0500
+Subject: [PATCH] Hack in startup code to force .init_array use
+
+.init and .fini have been deprecated for a long time, but for backwards
+compatibility, they are still added to every object file. Unfortunately,
+these sections don't have unwind info. For the purposes of this project
+kill them with fire. I'd like an officially supported option in the libc,
+to do this, but for now, I just do it by force.
+---
+ csu/elf-init.c              |  1 +
+ sunrpc/rpc_parse.c          |  2 +-
+ sysdeps/x86_64/Implies      |  1 +
+ sysdeps/x86_64/crti.S       | 47 +++------------------------------------------
+ sysdeps/x86_64/crtn.S       | 11 -----------
+ sysdeps/x86_64/elf-init.c   | 37 +++++++++++++++++++++++++++++++++++
+ sysdeps/x86_64/gmon-start.c | 41 +++++++++++++++++++++++++++++++++++++++
+ sysdeps/x86_64/pt-crti.S    | 23 ++++++++++++++++++++++
+ 8 files changed, 107 insertions(+), 56 deletions(-)
+ create mode 100644 sysdeps/x86_64/elf-init.c
+ create mode 100644 sysdeps/x86_64/gmon-start.c
+ create mode 100644 sysdeps/x86_64/pt-crti.S
+
+diff --git a/csu/elf-init.c b/csu/elf-init.c
+index 0fb98f1..24481ce 100644
+--- a/csu/elf-init.c
++++ b/csu/elf-init.c
+@@ -35,6 +35,7 @@
+ 
+ #include <stddef.h>
+ 
++#define NO_INITFINI
+ 
+ /* These magic symbols are provided by the linker.  */
+ extern void (*__preinit_array_start []) (int, char **, char **)
+diff --git a/sunrpc/rpc_parse.c b/sunrpc/rpc_parse.c
+index 1a1df6d..ef7e760 100644
+--- a/sunrpc/rpc_parse.c
++++ b/sunrpc/rpc_parse.c
+@@ -521,7 +521,7 @@ static void
+ get_prog_declaration (declaration * dec, defkind dkind, int num /* arg number */ )
+ {
+   token tok;
+-  char name[10];		/* argument name */
++  char name[20];		/* argument name */
+ 
+   if (dkind == DEF_PROGRAM)
+     {
+diff --git a/sysdeps/x86_64/Implies b/sysdeps/x86_64/Implies
+index 811c19a..3e2c75d 100644
+--- a/sysdeps/x86_64/Implies
++++ b/sysdeps/x86_64/Implies
+@@ -1,3 +1,4 @@
++init_array
+ x86
+ ieee754/ldbl-96
+ ieee754/dbl-64/wordsize-64
+diff --git a/sysdeps/x86_64/crti.S b/sysdeps/x86_64/crti.S
+index e9d86ed..68473ff 100644
+--- a/sysdeps/x86_64/crti.S
++++ b/sysdeps/x86_64/crti.S
+@@ -33,48 +33,7 @@
+    License along with the GNU C Library; if not, see
+    <http://www.gnu.org/licenses/>.  */
+ 
+-/* crti.S puts a function prologue at the beginning of the .init and
+-   .fini sections and defines global symbols for those addresses, so
+-   they can be called as functions.  The symbols _init and _fini are
+-   magic and cause the linker to emit DT_INIT and DT_FINI.  */
+-
+-#include <libc-symbols.h>
+-#include <sysdep.h>
+-
+-#ifndef PREINIT_FUNCTION
+-# define PREINIT_FUNCTION __gmon_start__
++#ifdef PREINIT_FUNCTION
++	.section .init_array,"a",%init_array
++	.dc.a PREINIT_FUNCTION
+ #endif
+-
+-#ifndef PREINIT_FUNCTION_WEAK
+-# define PREINIT_FUNCTION_WEAK 1
+-#endif
+-
+-#if PREINIT_FUNCTION_WEAK
+-	weak_extern (PREINIT_FUNCTION)
+-#else
+-	.hidden PREINIT_FUNCTION
+-#endif
+-
+-	.section .init,"ax",@progbits
+-	.p2align 2
+-	.globl _init
+-	.type _init, @function
+-_init:
+-	/* Maintain 16-byte stack alignment for called functions.  */
+-	subq $8, %rsp
+-#if PREINIT_FUNCTION_WEAK
+-	movq PREINIT_FUNCTION@GOTPCREL(%rip), %rax
+-	testq %rax, %rax
+-	je .Lno_weak_fn
+-	call *%rax
+-.Lno_weak_fn:
+-#else
+-	call PREINIT_FUNCTION
+-#endif
+-
+-	.section .fini,"ax",@progbits
+-	.p2align 2
+-	.globl _fini
+-	.type _fini, @function
+-_fini:
+-	subq $8, %rsp
+diff --git a/sysdeps/x86_64/crtn.S b/sysdeps/x86_64/crtn.S
+index b2fa0c6..f96402a 100644
+--- a/sysdeps/x86_64/crtn.S
++++ b/sysdeps/x86_64/crtn.S
+@@ -32,14 +32,3 @@
+    You should have received a copy of the GNU Lesser General Public
+    License along with the GNU C Library; if not, see
+    <http://www.gnu.org/licenses/>.  */
+-
+-/* crtn.S puts function epilogues in the .init and .fini sections
+-   corresponding to the prologues in crti.S. */
+-
+-	.section .init,"ax",@progbits
+-	addq $8, %rsp
+-	ret
+-
+-	.section .fini,"ax",@progbits
+-	addq $8, %rsp
+-	ret
+diff --git a/sysdeps/x86_64/elf-init.c b/sysdeps/x86_64/elf-init.c
+new file mode 100644
+index 0000000..7371831
+--- /dev/null
++++ b/sysdeps/x86_64/elf-init.c
+@@ -0,0 +1,37 @@
++/* Startup support for ELF initializers/finalizers in the main executable.
++   Copyright (C) 2013-2016 Free Software Foundation, Inc.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   In addition to the permissions in the GNU Lesser General Public
++   License, the Free Software Foundation gives you unlimited
++   permission to link the compiled version of this file with other
++   programs, and to distribute those programs without any restriction
++   coming from the use of this file. (The GNU Lesser General Public
++   License restrictions do apply in other respects; for example, they
++   cover modification of the file, and distribution when not linked
++   into another program.)
++
++   Note that people who make modified versions of this file are not
++   obligated to grant this special exception for their modified
++   versions; it is their choice whether to do so. The GNU Lesser
++   General Public License gives permission to release a modified
++   version without this exception; this exception also makes it
++   possible to release a modified version which carries forward this
++   exception.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <http://www.gnu.org/licenses/>.  */
++
++#define NO_INITFINI
++#include <csu/elf-init.c>
+diff --git a/sysdeps/x86_64/gmon-start.c b/sysdeps/x86_64/gmon-start.c
+new file mode 100644
+index 0000000..676b311
+--- /dev/null
++++ b/sysdeps/x86_64/gmon-start.c
+@@ -0,0 +1,41 @@
++/* gmon startup hook using .preinit_array.
++   Copyright (C) 2013-2016 Free Software Foundation, Inc.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   In addition to the permissions in the GNU Lesser General Public
++   License, the Free Software Foundation gives you unlimited
++   permission to link the compiled version of this file with other
++   programs, and to distribute those programs without any restriction
++   coming from the use of this file.  (The GNU Lesser General Public
++   License restrictions do apply in other respects; for example, they
++   cover modification of the file, and distribution when not linked
++   into another program.)
++
++   Note that people who make modified versions of this file are not
++   obligated to grant this special exception for their modified
++   versions; it is their choice whether to do so.  The GNU Lesser
++   General Public License gives permission to release a modified
++   version without this exception; this exception also makes it
++   possible to release a modified version which carries forward this
++   exception.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <http://www.gnu.org/licenses/>.  */
++
++/* Instead of defining __gmon_start__ globally in gcrt1.o, we make it
++   static and just put a pointer to it into the .preinit_array section.  */
++
++#define GMON_START_ARRAY_SECTION	".preinit_array"
++
++#include <csu/gmon-start.c>
+diff --git a/sysdeps/x86_64/pt-crti.S b/sysdeps/x86_64/pt-crti.S
+new file mode 100644
+index 0000000..fa568e7
+--- /dev/null
++++ b/sysdeps/x86_64/pt-crti.S
+@@ -0,0 +1,23 @@
++/* Special initializer support for libpthread.
++   Copyright (C) 2015-2016 Free Software Foundation, Inc.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <http://www.gnu.org/licenses/>.  */
++
++/* This arranges for libpthread.so's special initializer to be called as
++   soon as the library is loaded.  */
++
++	.section .init_array,"a",%init_array
++	.dc.a __pthread_initialize_minimal_internal
+-- 
+2.9.3
+
