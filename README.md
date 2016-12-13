@@ -11,12 +11,12 @@ this one:
 ```
 
 which is obviously not the actual backtrace of the system. Unfortunately, this situation is
-all-to-well accepted in the community, even though there is absolutely *no* reason to not have
+all-too-well accepted in the community, even though there is absolutely *no* reason to not have
 accurate stack traces at every single instruction in a program. Even worse this attitude leads
 to even more complication that could easily be avoided:
 
 - Authors of language VMs, etc. that need to reliably unwind the stack (e.g. for the purpose of garbage
-  collection) generally come up with their own scheme, one the one hand duplicating effort, but on the
+  collection) generally come up with their own scheme, on the one hand duplicating effort, but on the
   other making it quite impossible (or low performant) to use multiple such systems in the same process.
 - Authors of debuggers have added a large number of heuristics to detect cases of incorrect unwind info
   and attempt to still give a somewhat accurate stack trace. These heuristics are also used when unwind
