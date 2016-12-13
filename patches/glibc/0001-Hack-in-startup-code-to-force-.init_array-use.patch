@@ -1,4 +1,4 @@
-From d94e0c5b7e4e9c73b1a9c086c33c52d99158630c Mon Sep 17 00:00:00 2001
+From 059ff0a71c2875c3d8ca812bc963919a6b5afe4e Mon Sep 17 00:00:00 2001
 From: Keno Fischer <keno@juliacomputing.com>
 Date: Mon, 12 Dec 2016 18:44:49 -0500
 Subject: [PATCH] Hack in startup code to force .init_array use
@@ -10,14 +10,13 @@ kill them with fire. I'd like an officially supported option in the libc,
 to do this, but for now, I just do it by force.
 ---
  csu/elf-init.c              |  1 +
- sunrpc/rpc_parse.c          |  2 +-
  sysdeps/x86_64/Implies      |  1 +
  sysdeps/x86_64/crti.S       | 47 +++------------------------------------------
  sysdeps/x86_64/crtn.S       | 11 -----------
  sysdeps/x86_64/elf-init.c   | 37 +++++++++++++++++++++++++++++++++++
  sysdeps/x86_64/gmon-start.c | 41 +++++++++++++++++++++++++++++++++++++++
  sysdeps/x86_64/pt-crti.S    | 23 ++++++++++++++++++++++
- 8 files changed, 107 insertions(+), 56 deletions(-)
+ 7 files changed, 106 insertions(+), 55 deletions(-)
  create mode 100644 sysdeps/x86_64/elf-init.c
  create mode 100644 sysdeps/x86_64/gmon-start.c
  create mode 100644 sysdeps/x86_64/pt-crti.S
@@ -34,19 +33,6 @@ index 0fb98f1..24481ce 100644
  
  /* These magic symbols are provided by the linker.  */
  extern void (*__preinit_array_start []) (int, char **, char **)
-diff --git a/sunrpc/rpc_parse.c b/sunrpc/rpc_parse.c
-index 1a1df6d..ef7e760 100644
---- a/sunrpc/rpc_parse.c
-+++ b/sunrpc/rpc_parse.c
-@@ -521,7 +521,7 @@ static void
- get_prog_declaration (declaration * dec, defkind dkind, int num /* arg number */ )
- {
-   token tok;
--  char name[10];		/* argument name */
-+  char name[20];		/* argument name */
- 
-   if (dkind == DEF_PROGRAM)
-     {
 diff --git a/sysdeps/x86_64/Implies b/sysdeps/x86_64/Implies
 index 811c19a..3e2c75d 100644
 --- a/sysdeps/x86_64/Implies
