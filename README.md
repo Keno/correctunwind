@@ -181,3 +181,5 @@ For glibc:
 For binutils:
 - `0001-Fix-unwind-info-for-.plt.got-section.patch` - Fixes https://sourceware.org/bugzilla/show_bug.cgi?id=20830
 
+For gcc:
+- `0001-Make-sure-libgcc-has-unwind-info.patch` - Adds unwind info to libgcc
