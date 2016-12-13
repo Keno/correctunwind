@@ -178,3 +178,6 @@ For glibc:
 - `0001-Hack-in-startup-code-to-force-.init_array-use.patch` - Removes support for .init, using .init_array instead
   (Note to creators of the new linux distributions - consider dropping support for .init from your distribution).
 
+For binutils:
+- `0001-Fix-unwind-info-for-.plt.got-section.patch` - Fixes https://sourceware.org/bugzilla/show_bug.cgi?id=20830
+
